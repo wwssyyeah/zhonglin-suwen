@@ -1,0 +1,57 @@
+{
+  "template": "template.png",
+  "output": "output.png",
+  "date": {
+    "enabled": false,
+    "x": 70,
+    "y": 270,
+    "max_width": 320,
+    "font_size": 32,
+    "color": "#ffffff",
+    "align": "left",
+    "font_weight": "normal"
+  },
+  "weather": {
+    "enabled": false,
+    "x": 524,
+    "y": 350,
+    "max_width": 230,
+    "font_size": 32,
+    "color": "#ffffff",
+    "align": "right",
+    "location": {
+      "name": "苏州",
+      "latitude": 31.316,
+      "longitude": 120.620
+    }
+  },
+  "news": {
+    "x": 55,
+    "y": 641,
+    "max_width": 690,
+    "max_height": 1430,
+    "font_size": 26,
+    "line_height_ratio": 1.55,
+    "item_gap": 18,
+    "color": "#303030",
+    "num_color": "#1a1a1a",
+    "num_bold": true,
+    "align": "justify"
+  },
+  "fonts": {
+    "path": "",
+    "fallback_windows": [
+      "C:/Windows/Fonts/msyh.ttc",
+      "C:/Windows/Fonts/simhei.ttf",
+      "C:/Windows/Fonts/simsun.ttc"
+    ],
+    "fallback_linux": [
+      "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+      "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+    ],
+    "fallback_macos": [
+      "/System/Library/Fonts/PingFang.ttc",
+      "/System/Library/Fonts/STHeiti Light.ttc"
+    ]
+  }
+}
