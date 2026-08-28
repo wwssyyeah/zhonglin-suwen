@@ -42,7 +42,7 @@ jobs:
           cp output.png latest.png
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add latest.png
+          git add -f latest.png
           git commit -m "daily: update latest.png" || echo "no changes"
           git push
 
