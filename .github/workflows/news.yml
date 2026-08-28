@@ -37,7 +37,7 @@ jobs:
       - name: Render image
         run: python render.py
 
-      - name: Publish image to GitHub Pages
+      - name: Publish image to repo
         run: |
           cp output.png latest.png
           git config user.name "github-actions[bot]"
@@ -46,11 +46,15 @@ jobs:
           git commit -m "daily: update latest.png" || echo "no changes"
           git push
 
+      - name: Purge jsDelivr CDN cache
+        run: |
+          curl -s "https://purge.jsdelivr.net/gh/${{ github.repository_owner }}/${{ github.event.repository.name }}@main/latest.png" || echo "purge skipped"
+
       - name: Push to WeChat via PushPlus
         env:
           PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
           PUSHPLUS_TOPIC: ${{ secrets.PUSHPLUS_TOPIC }}
-        run: python pushplus_push.py "https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/latest.png"
+        run: python pushplus_push.py "https://cdn.jsdelivr.net/gh/${{ github.repository_owner }}/${{ github.event.repository.name }}@main/latest.png"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
