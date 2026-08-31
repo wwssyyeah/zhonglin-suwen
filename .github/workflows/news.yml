@@ -2,8 +2,8 @@ name: 钟林速闻每日自动生成
 
 on:
   schedule:
-    # 北京时间每天 09:00 = UTC 01:00
-    - cron: '0 1 * * *'
+    # 北京时间每天 08:15 = UTC 00:15
+    - cron: '15 0 * * *'
   workflow_dispatch:
 
 permissions:
@@ -27,12 +27,15 @@ jobs:
           sudo apt-get install -y fonts-wqy-zenhei fonts-noto-cjk
 
       - name: Install Python deps
-        run: pip install Pillow requests
+        run: pip install Pillow requests tzdata opencv-python-headless numpy
 
-      - name: Fetch & polish news
+      - name: Generate clean template
+        run: python clean_template_cv2.py
+
+      - name: Fetch & summarize news
         env:
           ZHIPU_API_KEY: ${{ secrets.ZHIPU_API_KEY }}
-        run: python fetch_60s.py news.json
+        run: python fetch_news.py news.json
 
       - name: Render image
         run: python render.py
