@@ -1,38 +1,48 @@
 {
-  "template": "template.png",
+  "template": "template_clean.png",
   "output": "output.png",
   "date": {
-    "enabled": false,
-    "x": 70,
-    "y": 270,
-    "max_width": 320,
-    "font_size": 32,
+    "enabled": true,
+    "x": 80,
+    "y": 370,
+    "max_width": 244,
+    "font_size": 34,
     "color": "#ffffff",
-    "align": "left",
-    "font_weight": "normal"
+    "align": "left"
   },
   "weather": {
-    "enabled": false,
-    "x": 524,
-    "y": 350,
-    "max_width": 230,
-    "font_size": 32,
-    "color": "#ffffff",
-    "align": "right",
+    "enabled": true,
     "location": {
       "name": "苏州",
       "latitude": 31.316,
       "longitude": 120.620
+    },
+    "icon": {
+      "x": 555,
+      "y": 252,
+      "size": 150
+    },
+    "text": {
+      "x": 602,
+      "y": 423,
+      "max_width": 129,
+      "font_size": 26,
+      "color": "#004AAD",
+      "align": "left"
     }
   },
   "news": {
-    "x": 55,
-    "y": 641,
-    "max_width": 690,
-    "max_height": 1430,
-    "font_size": 26,
-    "line_height_ratio": 1.55,
-    "item_gap": 18,
+    "x": 56,
+    "y": 642,
+    "max_width": 688,
+    "max_height": 1499,
+    "font_size": 30,
+    "font_size_max": 40,
+    "font_size_min": 16,
+    "line_height_ratio": 1.5,
+    "max_line_height_ratio": 2.2,
+    "item_gap": 16,
+    "max_item_gap": 36,
     "color": "#303030",
     "num_color": "#1a1a1a",
     "num_bold": true,
