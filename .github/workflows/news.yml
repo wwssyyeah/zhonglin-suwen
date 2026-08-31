@@ -41,23 +41,33 @@ jobs:
         run: python render.py
 
       - name: Publish image to repo
+        env:
+          TZ: Asia/Shanghai
         run: |
           cp output.png latest.png
+          DATE=$(date +%Y%m%d)
+          cp output.png "news-${DATE}.png"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add -f latest.png
+          git add -f latest.png "news-${DATE}.png"
           git commit -m "daily: update latest.png" || echo "no changes"
           git push
 
       - name: Purge jsDelivr CDN cache
+        env:
+          TZ: Asia/Shanghai
         run: |
           curl -s "https://purge.jsdelivr.net/gh/${{ github.repository_owner }}/${{ github.event.repository.name }}@main/latest.png" || echo "purge skipped"
+          curl -s "https://purge.jsdelivr.net/gh/${{ github.repository_owner }}/${{ github.event.repository.name }}@main/news-$(date +%Y%m%d).png" || echo "purge skipped"
 
       - name: Push to WeChat via PushPlus
         env:
           PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
           PUSHPLUS_TOPIC: ${{ secrets.PUSHPLUS_TOPIC }}
-        run: python pushplus_push.py "https://cdn.jsdelivr.net/gh/${{ github.repository_owner }}/${{ github.event.repository.name }}@main/latest.png"
+          TZ: Asia/Shanghai
+        run: |
+          DATE=$(date +%Y%m%d)
+          python pushplus_push.py "https://cdn.jsdelivr.net/gh/${{ github.repository_owner }}/${{ github.event.repository.name }}@main/news-${DATE}.png"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
