@@ -51,17 +51,18 @@
   "fonts": {
     "path": "",
     "fallback_windows": [
+      "C:/Windows/Fonts/simsun.ttc",
       "C:/Windows/Fonts/msyh.ttc",
-      "C:/Windows/Fonts/simhei.ttf",
-      "C:/Windows/Fonts/simsun.ttc"
+      "C:/Windows/Fonts/simhei.ttf"
     ],
     "fallback_linux": [
-      "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
-      "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+      "/usr/share/fonts/truetype/arphic/uming.ttc",
+      "/usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc",
+      "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc"
     ],
     "fallback_macos": [
-      "/System/Library/Fonts/PingFang.ttc",
-      "/System/Library/Fonts/STHeiti Light.ttc"
+      "/System/Library/Fonts/STSong.ttf",
+      "/System/Library/Fonts/PingFang.ttc"
     ]
   }
 }
