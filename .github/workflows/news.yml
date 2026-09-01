@@ -2,8 +2,11 @@ name: 钟林速闻每日自动生成
 
 on:
   schedule:
-    # 北京时间每天 08:15 = UTC 00:15
-    - cron: '15 0 * * *'
+    # 兜底定时：北京时间 07:50 = UTC 23:50
+    # 注意：GitHub 对公开仓库的 schedule 会集中排队、经常延迟数小时，
+    # 因此「准点 08:15」请改用外部云端定时器（如 cron-job.org）每天 08:15 触发 workflow_dispatch，
+    # dispatch 优先级高、几乎不延迟。见 README / 对话说明。
+    - cron: '50 23 * * *'
   workflow_dispatch:
 
 permissions:
@@ -21,10 +24,10 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install Chinese fonts
+      - name: Install Chinese serif (宋体) font
         run: |
           sudo apt-get update
-          sudo apt-get install -y fonts-wqy-zenhei fonts-noto-cjk
+          sudo apt-get install -y fonts-arphic-uming fonts-noto-cjk
 
       - name: Install Python deps
         run: pip install Pillow requests tzdata opencv-python-headless numpy
