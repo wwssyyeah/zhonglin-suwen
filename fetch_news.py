@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Fetch daily news from Chinese RSS feeds (primary) and 60s API (fallback),
-summarize with Zhipu AI based on article bodies, and write news.json.
+Grab the day's news from authoritative, free sources and write news.json.
 
-Sources are authoritative Chinese newsrooms (中新网 / 人民日报 / 央视).
+Sources (all free, no paid plan needed):
+  1. 中国政府网·国务院政策文件库  —— 官方接口，自带发文单位与发文字号
+  2. 中新网 7 个频道 RSS + 人民日报 + 央视新闻  —— 实测 24 小时内条目、带正文
+  3. GDELT（免费、无需 Key）—— 作为人民网/新华网等站的发现层；
+     这两家自有 RSS 已停更，但网站每日更新，故经 GDELT 索引后再拉正文。
+     取不到正文的条目直接丢弃，只保留能支撑客观概括的素材。
+
 Only items with enough body text are sent for summarization, so the AI can
 ground every sentence in real material instead of inventing details.
 """
@@ -24,28 +29,80 @@ SOFT_NEWS_KEYWORDS = [
     "梅西", "C罗", "詹姆斯", "科比", "运动员", "夺冠", "金牌", "亚军",
     "热播", "综艺", "票房", "追剧", "电影", "上映", "演唱会", "粉丝",
     "横店", "主演", "包邮", "带货", "直播间", "促销", "团购", "秒杀",
+    # 生活休闲 / 服务资讯类（非专业新闻，按钟林速闻既有标准剔除）
+    "预警信号", "气象台", "避暑", "文旅", "景区", "古镇", "美食", "打卡",
+    "萌宠", "萌娃", "宠物", "走红", "吸睛", "解锁", "新体验", "花海",
+    "赏花", "采摘", "夜市", "奇闻", "趣事", "搞笑", "短视频", "赶海",
 ]
 
+# 频道优先级：数值越小越靠前。政策 > 财经/要闻 > 国内/时政 > 国际 > 社会 > 滚动/健康
+SOURCE_PRIORITY = {
+    "中国政府网·国务院政策文件库": 0,
+    "中新网·要闻": 1,
+    "中新网·财经": 1,
+    "人民日报": 2,
+    "中新网·国内": 2,
+    "中新网·国际": 3,
+    "央视新闻": 3,
+    "中新网·社会": 4,
+    "中新网·滚动": 5,
+    "中新网·健康": 6,
+}
+DEFAULT_PRIORITY = 4
+
+# GDELT 来源域名按同一套优先级归类
+GDELT_DOMAIN_PRIORITY = [
+    (("gov.cn", "chinatax.gov.cn", "samr.gov.cn", "cnipa.gov.cn"), 0),
+    (("people.com.cn", "xinhuanet.com", "news.cn"), 2),
+    (("ce.cn",), 1),
+]
+
+
+def priority_of(item):
+    name = item.get("source_name", "")
+    if name in SOURCE_PRIORITY:
+        return SOURCE_PRIORITY[name]
+    for domains, prio in GDELT_DOMAIN_PRIORITY:
+        if any(d in name for d in domains):
+            return prio
+    return DEFAULT_PRIORITY
+
+# 实时性已实测（2026-09-02）：以下源 24 小时内条目占比高、且带正文。
+# 人民网/新华网自有 RSS 已停更（内容为 2020 年旧闻、无 pubDate），故不采用；
+# 这两家的当日新闻改由下面的 GDELT 发现层抓取。
 RSS_SOURCES = [
-    {"name": "中新网·滚动", "url": "http://www.chinanews.com/rss/scroll-news.xml"},
+    {"name": "中新网·要闻", "url": "http://www.chinanews.com/rss/importnews.xml"},
     {"name": "中新网·国内", "url": "http://www.chinanews.com/rss/china.xml"},
     {"name": "中新网·财经", "url": "http://www.chinanews.com/rss/finance.xml"},
     {"name": "中新网·国际", "url": "http://www.chinanews.com/rss/world.xml"},
     {"name": "中新网·社会", "url": "http://www.chinanews.com/rss/society.xml"},
+    {"name": "中新网·滚动", "url": "http://www.chinanews.com/rss/scroll-news.xml"},
+    {"name": "中新网·健康", "url": "http://www.chinanews.com/rss/health.xml"},
     {"name": "人民日报", "url": "https://plink.anyfeeder.com/people-daily"},
     {"name": "央视新闻", "url": "https://plink.anyfeeder.com/weixin/cctvnewscenter"},
 ]
 
-ENDPOINTS_60S = [
-    "https://60s.viki.moe/v2/60s",
+# 国务院政策文件库（中国政府网官方接口，免费、无需 Key，返回发文单位与发文字号）
+GOV_POLICY_API = "https://sousuo.www.gov.cn/search-gov/data"
+GOV_POLICY_LIMIT = 4
+
+# GDELT：免费、无需 Key 的全球新闻数据库。用作人民网/新华网等站的「发现层」——
+# 这些站点自有 RSS 已失效，但网站本身每日更新。取不到就静默跳过，不影响主流程。
+GDELT_API = "https://api.gdeltproject.org/api/v2/doc/doc"
+GDELT_DOMAINS = [
+    "people.com.cn", "xinhuanet.com", "news.cn", "gov.cn",
+    "ce.cn", "chinanews.com.cn", "chinatax.gov.cn", "samr.gov.cn",
 ]
 
 LINK_FETCH_ALLOWLIST = [
     "chinanews.com",
+    "chinanews.com.cn",
     "chinadaily.com.cn",
     "xinhuanet.com",
     "news.cn",
     "people.com.cn",
+    "ce.cn",
+    "gov.cn",
 ]
 
 MIN_BODY_LEN = 60
@@ -71,7 +128,10 @@ def strip_html(raw):
 
 
 def is_soft_news(title):
-    return any(kw in title for kw in SOFT_NEWS_KEYWORDS)
+    if any(kw in title for kw in SOFT_NEWS_KEYWORDS):
+        return True
+    # 以问号收尾的中文标题多为评论、情感类稿件，非事实新闻
+    return title.rstrip().endswith(("？", "?"))
 
 
 def fetch_url(url, timeout=20):
@@ -152,6 +212,115 @@ def fetch_rss_sources():
     return all_items
 
 
+def fetch_gov_policy():
+    """国务院政策文件库——权威、免费、无 Key，且自带发文单位与发文字号。
+
+    只拼接接口返回的真实元数据，不做任何推断或补充。
+    """
+    try:
+        r = requests.get(
+            GOV_POLICY_API,
+            params={
+                "t": "zhengcelibrary_gw", "q": "", "sort": "pubtime",
+                "sortType": "1", "searchfield": "title",
+                "p": "1", "n": str(GOV_POLICY_LIMIT),
+            },
+            headers={"User-Agent": "zhonglin-news-bot/1.0"},
+            timeout=25,
+        )
+        r.raise_for_status()
+        rows = r.json()["searchVO"]["catMap"]["gongwen"]["listVO"]
+    except Exception as e:
+        print(f"gov policy fetch failed: {e}", file=sys.stderr)
+        return []
+
+    out = []
+    for a in rows[:GOV_POLICY_LIMIT]:
+        title = strip_html(a.get("title") or "").strip()
+        if not title or is_soft_news(title):
+            continue
+        puborg = (a.get("puborg") or "").strip()          # 发文单位
+        pcode = (a.get("pcode") or "").strip()            # 发文字号
+        pubtime = (a.get("pubtimeStr") or "").strip()     # 发布日期
+        summary = strip_html(a.get("summary") or "").strip()
+        # body 只由接口返回的真实字段拼成，供 AI 概括时取材，不做任何推断补充
+        body = "；".join(
+            p for p in [
+                f"发文单位：{puborg}" if puborg else "",
+                f"发文字号：{pcode}" if pcode else "",
+                f"发布日期：{pubtime}" if pubtime else "",
+                f"标题：{title}",
+                f"原文摘要：{summary[:400]}" if summary else "",
+            ] if p
+        )
+        out.append({
+            "title": title,
+            "link": a.get("url") or "https://www.gov.cn/zhengce/zuixin.htm",
+            "body": body,
+            "pub_dt": None,
+            "source_name": "中国政府网·国务院政策文件库",
+        })
+    if out:
+        print(f"gov policy: {len(out)} items", file=sys.stderr)
+    return out
+
+
+def fetch_gdelt():
+    """GDELT 发现层：抓取人民网/新华网等站当日新闻，需成功取到正文才保留。
+
+    GDELT 免费且无需 Key；不可达时静默返回空列表，不影响主流程。
+    """
+    try:
+        r = requests.get(
+            GDELT_API,
+            params={
+                "query": "sourcelang:chinese", "mode": "ArtList",
+                "maxrecords": "75", "format": "json", "timespan": "1d",
+                "sort": "DateDesc",
+            },
+            headers={"User-Agent": "zhonglin-news-bot/1.0"},
+            timeout=40,
+        )
+        r.raise_for_status()
+        arts = r.json().get("articles", [])
+    except Exception as e:
+        print(f"gdelt unavailable ({type(e).__name__}), skipped", file=sys.stderr)
+        return []
+
+    out = []
+    for a in arts:
+        url = a.get("url") or ""
+        domain = a.get("domain") or ""
+        if not any(d in domain for d in GDELT_DOMAINS):
+            continue
+        title = (a.get("title") or "").strip()
+        if not title or is_soft_news(title):
+            continue
+        body = strip_html(fetch_article_body(url) or "")
+        # 取不到正文就丢弃：只有标题的条目无法支撑客观概括
+        if len(body) < MIN_BODY_LEN:
+            continue
+        pub_dt = None
+        try:
+            pub_dt = datetime.strptime(
+                a.get("seendate", ""), "%Y%m%dT%H%M%SZ"
+            ).replace(tzinfo=timezone.utc)
+        except Exception:
+            pass
+        out.append({
+            "title": title,
+            "link": url,
+            "body": body[:MAX_BODY_LEN],
+            "pub_dt": pub_dt,
+            "source_name": f"GDELT·{domain}",
+        })
+        if len(out) >= 8:
+            break
+    if out:
+        print(f"gdelt: {len(out)} items with body", file=sys.stderr)
+    return out
+
+
 def dedup(items):
     seen = set()
     out = []
@@ -178,34 +347,21 @@ def select_items(items, limit=MAX_SUMMARY_INPUT):
     kept = [it for it in items if not is_soft_news(it["title"])]
     rich = [it for it in kept if len(it["body"]) >= MIN_BODY_LEN]
     thin = [it for it in kept if len(it["body"]) < MIN_BODY_LEN]
-    rich.sort(key=lambda x: x["pub_dt"] or datetime(1970, 1, 1, tzinfo=timezone.utc), reverse=True)
-    thin.sort(key=lambda x: x["pub_dt"] or datetime(1970, 1, 1, tzinfo=timezone.utc), reverse=True)
+    def newest(it):
+        return it["pub_dt"] or datetime(1970, 1, 1, tzinfo=timezone.utc)
+
+    rich.sort(key=newest, reverse=True)
+    thin.sort(key=newest, reverse=True)
+    # 先按时间倒序，再用稳定排序把「政策 / 财经 / 时政」类顶到前面，
+    # 避免社会、休闲类新闻占满版面。
+    rich.sort(key=priority_of)
+    thin.sort(key=priority_of)
     ordered = (rich + thin)[:limit]
     # pull full article text so the AI has enough material for 3-5 sentences
     for it in ordered:
         enrich_body(it)
         print(f"  body[{len(it['body']):4d}] {it['title'][:30]}", file=sys.stderr)
     return ordered
-
-
-def fetch_60s():
-    today = now_sh().strftime("%Y-%m-%d")
-    urls = ENDPOINTS_60S + [
-        f"https://60s-static.viki.moe/60s/{today}.json",
-        f"https://cdn.jsdelivr.net/gh/vikiboss/60s-static-host@main/static/60s/{today}.json",
-    ]
-    last_err = None
-    for url in urls:
-        try:
-            r = requests.get(url, timeout=30, headers={"User-Agent": "zhonglin-news-bot/1.0"})
-            r.raise_for_status()
-            data = r.json()
-            payload = data.get("data", data) if isinstance(data, dict) else {"news": []}
-            return payload, payload.get("news", [])
-        except Exception as e:
-            last_err = e
-            continue
-    raise RuntimeError(f"All 60s endpoints failed. Last error: {last_err}")
 
 
 def summarize_one(item, key, model):
@@ -299,37 +455,29 @@ def summarize_with_zhipu(items):
     return results if results else None
 
 
+def collect_items():
+    """按优先级汇聚：国务院政策 → 中新网/人民日报/央视 RSS → GDELT 发现层。"""
+    policy = fetch_gov_policy()
+
+    pool_items = fetch_rss_sources() + fetch_gdelt()
+    pool = select_items(dedup(pool_items), limit=max(MAX_SUMMARY_INPUT - len(policy), 6))
+
+    return policy + pool
+
+
 def main():
     out_path = sys.argv[1] if len(sys.argv) > 1 else "news.json"
 
-    # 1) RSS primary
-    rss_items = select_items(dedup(fetch_rss_sources()))
-    summaries = None
-    source_note = "60s.viki.moe / 60秒读懂世界"
-    source_url = "https://60s.viki.moe/v2/60s"
+    picked = collect_items()
+    if not picked:
+        raise RuntimeError("No news items returned from any source")
 
-    if rss_items:
-        summaries = summarize_with_zhipu(rss_items)
-        if summaries:
-            names = sorted({it["source_name"] for it in rss_items if it.get("source_name")})
-            source_note = "、".join(names)
-            source_url = rss_items[0].get("link", "")
+    names = sorted({it.get("source_name", "") for it in picked if it.get("source_name")})
+    source_note = "、".join(names) if names else "中新网"
+    source_url = next((it.get("link", "") for it in picked if it.get("link")), "")
 
-    # 2) Fallback: 60s
-    if not summaries:
-        payload, raw = fetch_60s()
-        if not raw:
-            raise RuntimeError("No news items returned from any source")
-        titles = [t for t in raw if not is_soft_news(t)]
-        if not titles:
-            titles = raw[:]
-        summaries = titles
-        if rss_items:
-            # keep RSS titles if AI failed but RSS worked
-            summaries = [it["title"] for it in rss_items]
-            names = sorted({it["source_name"] for it in rss_items if it.get("source_name")})
-            source_note = "、".join(names)
-            source_url = rss_items[0].get("link", "")
+    # AI 概括失败（额度耗尽/限流）时，降级为原始标题，绝不写入无来源内容
+    summaries = summarize_with_zhipu(picked) or [it["title"] for it in picked]
 
     # 3) Renumber
     items = [f"{i + 1}. {t}" for i, t in enumerate(summaries)]
@@ -342,7 +490,7 @@ def main():
         "source": source_note,
         "source_url": source_url,
         "disclaimer": "内容源自公开网络聚合，仅供内部参考，不构成任何投资或决策依据。",
-        "raw_count": len(rss_items),
+        "raw_count": len(picked),
         "kept_count": len(items),
         "items": items,
     }
