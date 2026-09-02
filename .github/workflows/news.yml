@@ -2,12 +2,25 @@ name: 钟林速闻每日自动生成
 
 on:
   schedule:
-    # 兜底定时：北京时间 07:50 = UTC 23:50
-    # 注意：GitHub 对公开仓库的 schedule 会集中排队、经常延迟数小时，
-    # 因此「准点 08:15」请改用外部云端定时器（如 cron-job.org）每天 08:15 触发 workflow_dispatch，
-    # dispatch 优先级高、几乎不延迟。见 README / 对话说明。
-    - cron: '50 23 * * *'
+    # GitHub 对公开仓库的 schedule 会集中排队、实测延迟 1.5–5 小时。
+    # 因此这里故意提前到北京 06:00（UTC 22:00）启动，再由下面的
+    # 「对齐 08:15」步骤原地等待到 08:15 再执行，用提前量抵消排队延迟。
+    # 若仍延迟超过 2 小时 15 分，则不再等待、立即出图（宁可晚，不可不出）。
+    - cron: '0 22 * * *'
   workflow_dispatch:
+    inputs:
+      hold_until_0815:
+        description: '是否等待到北京时间 08:15 再执行。外部定时器已精准触发时保持 false。'
+        required: false
+        default: 'false'
+        type: choice
+        options: ['false', 'true']
+
+# 同一时刻只允许一个实例在跑；后来的排队等待而不是并发，
+# 配合下面的「今日已产出则跳过」守卫，保证每天只推一张图。
+concurrency:
+  group: zhonglin-suwen-daily
+  cancel-in-progress: false
 
 permissions:
   contents: write
@@ -24,26 +37,77 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: 对齐到北京时间 08:15
+        env:
+          TZ: Asia/Shanghai
+        run: |
+          MODE="now"
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            MODE="hold"
+          elif [ "${{ inputs.hold_until_0815 }}" = "true" ]; then
+            MODE="hold"
+          fi
+          if [ "$MODE" != "hold" ]; then
+            echo "手动/外部定时器触发：立即执行"
+            exit 0
+          fi
+          TARGET=$(date -d "today 08:15" +%s)
+          NOW=$(date +%s)
+          DIFF=$((TARGET - NOW))
+          echo "当前北京时间 $(date '+%F %H:%M:%S')，距 08:15 还有 ${DIFF} 秒"
+          if [ "$DIFF" -gt 0 ] && [ "$DIFF" -le 10800 ]; then
+            echo "排队提前到达，等待 ${DIFF} 秒后于 08:15 执行"
+            sleep "$DIFF"
+          elif [ "$DIFF" -gt 10800 ]; then
+            echo "距 08:15 超过 3 小时，按异常情况立即执行"
+          else
+            echo "GitHub 排队延迟 $((-DIFF)) 秒，已过 08:15，立即执行"
+          fi
+
+      - name: 今日已产出则跳过
+        env:
+          TZ: Asia/Shanghai
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          DATE=$(date +%Y%m%d)
+          HTTP=$(curl -s -o /dev/null -w "%{http_code}" \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/contents/news-${DATE}.png")
+          echo "news-${DATE}.png 查询结果 HTTP ${HTTP}"
+          if [ "$HTTP" = "200" ]; then
+            echo "今日产物已存在，跳过本次运行，避免重复推送"
+            echo "SKIP=true" >> "$GITHUB_ENV"
+          else
+            echo "SKIP=false" >> "$GITHUB_ENV"
+          fi
+
       - name: Install Chinese serif (宋体) font
+        if: env.SKIP != 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y fonts-arphic-uming fonts-noto-cjk
 
       - name: Install Python deps
+        if: env.SKIP != 'true'
         run: pip install Pillow requests tzdata opencv-python-headless numpy
 
       - name: Generate clean template
+        if: env.SKIP != 'true'
         run: python clean_template_cv2.py
 
       - name: Fetch & summarize news
+        if: env.SKIP != 'true'
         env:
           ZHIPU_API_KEY: ${{ secrets.ZHIPU_API_KEY }}
         run: python fetch_news.py news.json
 
       - name: Render image
+        if: env.SKIP != 'true'
         run: python render.py
 
       - name: Publish image to repo
+        if: env.SKIP != 'true'
         env:
           TZ: Asia/Shanghai
         run: |
@@ -57,6 +121,7 @@ jobs:
           git push
 
       - name: Purge jsDelivr CDN cache
+        if: env.SKIP != 'true'
         env:
           TZ: Asia/Shanghai
         run: |
@@ -64,6 +129,7 @@ jobs:
           curl -s "https://purge.jsdelivr.net/gh/${{ github.repository_owner }}/${{ github.event.repository.name }}@main/news-$(date +%Y%m%d).png" || echo "purge skipped"
 
       - name: Push to WeChat via PushPlus
+        if: env.SKIP != 'true'
         env:
           PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
           PUSHPLUS_TOPIC: ${{ secrets.PUSHPLUS_TOPIC }}
@@ -73,6 +139,7 @@ jobs:
           python pushplus_push.py "https://cdn.jsdelivr.net/gh/${{ github.repository_owner }}/${{ github.event.repository.name }}@main/news-${DATE}.png"
 
       - name: Upload artifact
+        if: env.SKIP != 'true'
         uses: actions/upload-artifact@v4
         with:
           name: zhonglin-suwen-${{ github.run_id }}
