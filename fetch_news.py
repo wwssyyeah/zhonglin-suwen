@@ -35,18 +35,18 @@ SOFT_NEWS_KEYWORDS = [
     "赏花", "采摘", "夜市", "奇闻", "趣事", "搞笑", "短视频", "赶海",
 ]
 
-# 频道优先级：数值越小越靠前。政策 > 财经/要闻 > 国内/时政 > 国际 > 社会 > 滚动/健康
+# 频道优先级：数值越小越靠前。专业源全在第一档。
 SOURCE_PRIORITY = {
     "中国政府网·国务院政策文件库": 0,
     "中新网·要闻": 1,
     "中新网·财经": 1,
-    "人民日报": 2,
-    "中新网·国内": 2,
-    "中新网·国际": 3,
-    "央视新闻": 3,
-    "中新网·社会": 4,
-    "中新网·滚动": 5,
-    "中新网·健康": 6,
+    "中新网·国内": 1,
+    "中新网·国际": 1,
+    "人民日报": 1,
+    "央视新闻": 1,
+    "中新网·社会": 3,
+    "中新网·滚动": 4,
+    "中新网·健康": 5,
 }
 DEFAULT_PRIORITY = 4
 
@@ -103,6 +103,8 @@ LINK_FETCH_ALLOWLIST = [
     "people.com.cn",
     "ce.cn",
     "gov.cn",
+    "cctv.com",
+    "cntv.cn",
 ]
 
 MIN_BODY_LEN = 60
@@ -279,7 +281,7 @@ def fetch_gdelt():
                 "sort": "DateDesc",
             },
             headers={"User-Agent": "zhonglin-news-bot/1.0"},
-            timeout=40,
+            timeout=25,
         )
         r.raise_for_status()
         arts = r.json().get("articles", [])
@@ -343,25 +345,47 @@ def enrich_body(it):
 
 
 def select_items(items, limit=MAX_SUMMARY_INPUT):
-    """Prefer non-soft news with enough body text, newest first."""
-    kept = [it for it in items if not is_soft_news(it["title"])]
-    rich = [it for it in kept if len(it["body"]) >= MIN_BODY_LEN]
-    thin = [it for it in kept if len(it["body"]) < MIN_BODY_LEN]
-    def newest(it):
-        return it["pub_dt"] or datetime(1970, 1, 1, tzinfo=timezone.utc)
+    """按「政策 > 财经/要闻 > 时政 > 社会」优先级筛选，再按源轮询保证多样性。
 
-    rich.sort(key=newest, reverse=True)
-    thin.sort(key=newest, reverse=True)
-    # 先按时间倒序，再用稳定排序把「政策 / 财经 / 时政」类顶到前面，
-    # 避免社会、休闲类新闻占满版面。
-    rich.sort(key=priority_of)
-    thin.sort(key=priority_of)
-    ordered = (rich + thin)[:limit]
-    # pull full article text so the AI has enough material for 3-5 sentences
-    for it in ordered:
-        enrich_body(it)
-        print(f"  body[{len(it['body']):4d}] {it['title'][:30]}", file=sys.stderr)
-    return ordered
+    之前单纯按 (优先级, 时间) 排序，会让数量最多的源（如中新网财经）占满版面，
+    权威党媒因 RSS 描述偏短反而被挤掉。这里改成：
+      1) 先按 (优先级, 时间倒序) 全局排序；
+      2) 取前 40 条为候选池，逐条 enrich_body 补齐正文；
+      3) 按"优先级升序的源顺序"轮询取条，确保每个源都至少露脸。
+    """
+    kept = [it for it in items if not is_soft_news(it["title"])]
+
+    def sort_key(x):
+        ts = x["pub_dt"].timestamp() if x.get("pub_dt") else 0
+        return (priority_of(x), -ts)
+
+    kept.sort(key=sort_key)
+
+    candidates = kept[:40]
+    for it in candidates:
+        if len(it["body"]) < MAX_BODY_LEN:
+            enrich_body(it)
+
+    usable = [it for it in candidates
+              if len(it["body"]) >= MIN_BODY_LEN or priority_of(it) <= 1]
+
+    buckets = {}
+    for it in usable:
+        buckets.setdefault(it.get("source_name", "?"), []).append(it)
+
+    src_min_prio = {s: min(priority_of(it) for it in lst) for s, lst in buckets.items()}
+    sources = sorted(buckets.keys(), key=lambda s: src_min_prio[s])
+
+    out = []
+    while len(out) < limit and any(buckets[s] for s in sources):
+        for s in sources:
+            if buckets[s] and len(out) < limit:
+                out.append(buckets[s].pop(0))
+
+    for it in out:
+        print(f"  body[{len(it['body']):4d}] prio={priority_of(it)} "
+              f"{it.get('source_name','')[:14]} | {it['title'][:30]}", file=sys.stderr)
+    return out
 
 
 def summarize_one(item, key, model):
