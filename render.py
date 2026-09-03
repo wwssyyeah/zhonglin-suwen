@@ -4,10 +4,21 @@
 Render daily news onto the cleaned template image (template_clean.png).
 - Date / weather icon / weather text are fetched live (Suzhou) and drawn into
   the exact rectangles provided by the user.
-- News list is auto-fitted to fill the white card:
-    * if it underfills, increase font/line spacing/gap to spread out;
-    * if it overflows, shrink font while keeping all items (dense is OK).
-Outputs output.png ready for PushPlus push.
+- News list is auto-fitted to fill the white card with EXACT height accounting,
+  so it never overflows the given region.
+
+Changes vs prior version:
+  * measure_height() now uses real font metrics (ascent+descent) for the last
+    line, plus a 4 px safety margin, so the chosen layout is guaranteed to
+    stay inside the region.
+  * fit_news() now distributes leftover space to gap AND line height, then
+    re-validates the total. If still over, line_h is pulled back. Last item
+    is trimmed only as a final safety net.
+  * render_news() pre-checks each line / item against the bottom boundary
+    before drawing, so a misbehaving measure can never paint below max_y.
+  * render_text_region() supports a stroke_width so date and weather text
+    render as bold (PIL doesn't have real bold for the 宋体 file, stroke
+    width gives a consistent cross-platform "粗" effect).
 """
 import json
 import os
@@ -33,6 +44,8 @@ WEATHER_CODE_CN = {
     95: ("雷阵雨", "thunder"), 96: ("雷阵雨", "thunder"), 99: ("雷暴", "thunder"),
 }
 WEEKDAY_CN = ["一", "二", "三", "四", "五", "六", "日"]
+
+SAFETY_PX = 4  # safety margin (px) reserved below the last line of text
 
 
 def load_config():
@@ -69,6 +82,12 @@ def find_font(fonts_cfg, size):
 def text_width(draw, text, font):
     bbox = draw.textbbox((0, 0), text, font=font)
     return bbox[2] - bbox[0]
+
+
+def text_height(font):
+    """Real pixel height of one line of text: ascent + descent."""
+    a, d = font.getmetrics()
+    return a + d
 
 
 def wrap_text(text, max_width, font, draw):
@@ -156,7 +175,7 @@ def draw_weather_icon(draw, cat, cx, cy, s):
                      fill=(255, 210, 40))
 
 
-def render_text_region(draw, text, region, font, align="left", color=None):
+def render_text_region(draw, text, region, font, align="left", color=None, stroke_width=0):
     x, y = region["x"], region["y"]
     max_w = region["max_width"]
     color = color or region["color"]
@@ -164,22 +183,35 @@ def render_text_region(draw, text, region, font, align="left", color=None):
         x = x + max_w - text_width(draw, text, font)
     elif align == "center":
         x = x + (max_w - text_width(draw, text, font)) // 2
-    draw.text((x, y), text, fill=color, font=font)
+    if stroke_width > 0:
+        draw.text((x, y), text, fill=color, font=font,
+                  stroke_width=stroke_width, stroke_fill=color)
+    else:
+        draw.text((x, y), text, fill=color, font=font)
 
 
 def render_news(draw, items, cfg, font, line_h, item_gap):
     x, y = cfg["x"], cfg["y"]
     max_w = cfg["max_width"]
+    max_y = y + cfg["max_height"]  # 预留 SAFETY_PX 由 fit_news 负责
     color = cfg["color"]
     num_color = cfg["num_color"]
+    th = text_height(font)
     number_match = re.compile(r"^(\d+\.\s*)(.*)$")
 
     cur_y = y
+    num_sample = "99. "
+    num_w = text_width(draw, num_sample, font)
+
     for item in items:
         lines = wrap_text(item, max_w, font, draw)
-        num_sample = "99. "
-        num_w = text_width(draw, num_sample, font)
+        # Pre-check: at least the first line of this item must fit
+        if cur_y + th > max_y:
+            return
         for i, line in enumerate(lines):
+            # Each line's text bottom must stay inside the region.
+            if cur_y + th > max_y:
+                return
             if i == 0:
                 m = number_match.match(line)
                 if m:
@@ -192,29 +224,27 @@ def render_news(draw, items, cfg, font, line_h, item_gap):
             else:
                 draw.text((x + num_w, cur_y), line, fill=color, font=font)
             cur_y += line_h
+        # Gap check: only add the inter-item gap if the next item's first
+        # line (line_h worth + text_h) would still fit.
+        if cur_y + item_gap + th > max_y:
+            return
         cur_y += item_gap
-        if cur_y > y + cfg["max_height"]:
-            break
 
 
-def measure_height(items, cfg, fonts_cfg, font_size, line_h, item_gap):
-    tmp = Image.new("RGBA", (1, 1))
-    draw = ImageDraw.Draw(tmp)
-    font = find_font(fonts_cfg, font_size)
-    x, y = cfg["x"], cfg["y"]
-    max_w = cfg["max_width"]
-    cur_y = y
-    for item in items:
-        lines = wrap_text(item, max_w, font, draw)
-        cur_y += len(lines) * line_h + item_gap
-    return cur_y - y - item_gap
+def actual_render_height(items, cfg, font, line_h, gap, draw):
+    """Exact render height: (n_lines-1)*line_h + text_h + (n_items-1)*gap + safety."""
+    n_lines = 0
+    for it in items:
+        n_lines += len(wrap_text(it, cfg["max_width"], font, draw))
+    if n_lines == 0:
+        return 0
+    th = text_height(font)
+    n_items = len(items)
+    gaps = max(0, n_items - 1) * gap
+    return (n_lines - 1) * line_h + th + gaps + SAFETY_PX
 
 
 def fit_news(items, cfg, fonts_cfg):
-    """Bidirectional fit:
-    - If content overflows, shrink font (keep all items, dense OK).
-    - If content underfills, increase font / gap / line spacing to spread out.
-    """
     max_h = cfg["max_height"]
     max_w = cfg["max_width"]
     base_ratio = cfg["line_height_ratio"]
@@ -224,44 +254,52 @@ def fit_news(items, cfg, fonts_cfg):
     max_ratio = cfg.get("max_line_height_ratio", base_ratio)
     max_gap = cfg.get("max_item_gap", base_gap)
 
-    # 1) find largest font that fits with base spacing (preserve all items)
-    chosen_font = None
+    tmp = Image.new("RGBA", (1, 1))
+    draw0 = ImageDraw.Draw(tmp)
+
+    def lines_per_item(fs):
+        font = find_font(fonts_cfg, fs)
+        return [len(wrap_text(it, max_w, font, draw0)) for it in items], font
+
+    # 1) pick the largest font whose actual render height (with base gap) fits.
+    chosen_fs = fmin
+    chosen_font = find_font(fonts_cfg, fmin)
     for fs in range(fmax, fmin - 1, -1):
+        lpe, f = lines_per_item(fs)
         line_h = int(fs * base_ratio)
-        h = measure_height(items, cfg, fonts_cfg, fs, line_h, base_gap)
+        h = actual_render_height(items, cfg, f, line_h, base_gap, draw0)
         if h <= max_h:
-            chosen_font = find_font(fonts_cfg, fs)
             chosen_fs = fs
+            chosen_font = f
             break
 
-    if chosen_font is None:
-        # even min font overflows -> trim items as last resort
-        chosen_fs = fmin
-        line_h = int(chosen_fs * base_ratio)
-        while len(items) > 1 and measure_height(items, cfg, fonts_cfg, chosen_fs, line_h, base_gap) > max_h:
-            items = items[:-1]
-        return find_font(fonts_cfg, chosen_fs), items, line_h, base_gap
-
     line_h = int(chosen_fs * base_ratio)
-    h = measure_height(items, cfg, fonts_cfg, chosen_fs, line_h, base_gap)
-    leftover = max_h - h
+    cur_h = actual_render_height(items, cfg, chosen_font, line_h, base_gap, draw0)
+    leftover = max_h - cur_h
 
-    # 2) if underfilled, spread out: first gap, then line height
-    if leftover > 0 and len(items) > 1:
+    # 2) under-fill: spread gap first, then line height, then re-validate.
+    if leftover > 2 * SAFETY_PX and len(items) > 1:
         n_gaps = max(1, len(items) - 1)
         extra_gap = int(min(leftover / n_gaps, max_gap - base_gap))
-        gap = base_gap + extra_gap
-        h2 = measure_height(items, cfg, fonts_cfg, chosen_fs, line_h, gap)
-        leftover2 = max_h - h2
-        if leftover2 > 0:
-            n_lines = sum(len(wrap_text(item, max_w, chosen_font, ImageDraw.Draw(Image.new("RGBA", (1, 1)))))
-                           for item in items)
-            if n_lines > 0:
-                extra_per_line = leftover2 / n_lines
-                ratio = base_ratio + extra_per_line / chosen_fs
-                ratio = min(ratio, max_ratio)
-                line_h = int(chosen_fs * ratio)
-        return chosen_font, items, line_h, gap
+        if extra_gap > 0:
+            gap = base_gap + extra_gap
+            # re-measure with new gap, then add the rest to line_h
+            h2 = actual_render_height(items, cfg, chosen_font, line_h, gap, draw0)
+            leftover2 = max_h - h2
+            if leftover2 > 0:
+                lpe, _ = lines_per_item(chosen_fs)
+                n_lines = sum(lpe)
+                if n_lines > 1:
+                    # Distribute leftover2 across (n_lines-1) line spacings.
+                    inc_ratio = leftover2 / (chosen_fs * (n_lines - 1))
+                    ratio = min(base_ratio + inc_ratio, max_ratio)
+                    line_h = int(chosen_fs * ratio)
+            # final safety: pull line_h back if still over
+            h3 = actual_render_height(items, cfg, chosen_font, line_h, gap, draw0)
+            while h3 > max_h and line_h > int(chosen_fs * base_ratio):
+                line_h -= 1
+                h3 = actual_render_height(items, cfg, chosen_font, line_h, gap, draw0)
+            return chosen_font, items, line_h, gap
 
     return chosen_font, items, line_h, base_gap
 
@@ -271,6 +309,17 @@ def build_display_date(news):
         return news["display_date"]
     now = datetime.now(ZoneInfo("Asia/Shanghai"))
     return f"{now.year}年{now.month}月{now.day}日 周{WEEKDAY_CN[now.weekday()]}"
+
+
+def bold_stroke_width(font, region):
+    """Decide stroke_width for a 'bold' region. Returns 0 if not bold."""
+    if not region.get("bold"):
+        return 0
+    # ~8% of font size, clamped 1..3. 1 too thin to see, >3 starts to blur
+    # Chinese strokes. Tested on simsun at fs=34 -> 2, fs=26 -> 2.
+    fs = font.size
+    sw = int(fs * 0.08)
+    return max(1, min(3, sw))
 
 
 def main():
@@ -285,7 +334,9 @@ def main():
         dcfg = config["date"]
         text = build_display_date(news)
         font = find_font(config["fonts"], dcfg["font_size"])
-        render_text_region(draw, text, dcfg, font, dcfg.get("align", "left"))
+        sw = bold_stroke_width(font, dcfg)
+        render_text_region(draw, text, dcfg, font, dcfg.get("align", "left"),
+                           stroke_width=sw)
 
     # 2) Weather overlay (live Suzhou) + icon
     if config.get("weather", {}).get("enabled"):
@@ -299,9 +350,11 @@ def main():
             tcfg = wcfg.get("text", {})
             text = f"{wx['desc']} {wx['temp']}°C"
             font = find_font(config["fonts"], tcfg["font_size"])
-            render_text_region(draw, text, tcfg, font, tcfg.get("align", "left"))
+            sw = bold_stroke_width(font, tcfg)
+            render_text_region(draw, text, tcfg, font, tcfg.get("align", "left"),
+                               stroke_width=sw)
 
-    # 3) News list (bidirectional fit)
+    # 3) News list (exact-fit)
     items = news.get("items", [])
     if not items:
         print("No news items", file=sys.stderr)
@@ -311,7 +364,8 @@ def main():
 
     output_path = config.get("output", "output.png")
     img.save(output_path, "PNG")
-    print(f"Saved {output_path} | items={len(final_items)} | font={font.size} | line_h={line_h} | gap={item_gap}")
+    print(f"Saved {output_path} | items={len(final_items)} | font={font.size} | "
+          f"line_h={line_h} | gap={item_gap} | text_h={text_height(font)}")
 
 
 if __name__ == "__main__":
