@@ -46,6 +46,7 @@ WEATHER_CODE_CN = {
 WEEKDAY_CN = ["一", "二", "三", "四", "五", "六", "日"]
 
 SAFETY_PX = 4  # safety margin (px) reserved below the last line of text
+HORIZ_SAFETY_PX = 6  # horizontal safety (px) reserved on the right of text
 
 
 def load_config():
@@ -106,6 +107,22 @@ def wrap_text(text, max_width, font, draw):
     if current:
         lines.append(current)
     return lines if lines else [text]
+
+
+def _split_num(text):
+    """Return (num_part, rest) if text starts with 'N. ', else (None, text)."""
+    m = re.match(r"^(\d+\.\s*)(.*)$", text)
+    if m:
+        return m.group(1), m.group(2)
+    return None, text
+
+
+def wrap_body_for_fit(text, body_max_width, font, draw):
+    """Wrap the body of an item (after stripping the 'N. ' prefix) for height
+    calculation. Reserves (max_width - body_max_width) pixels for the number
+    column on continuation lines."""
+    _, body = _split_num(text)
+    return wrap_text(body, body_max_width, font, draw)
 
 
 def fetch_weather(loc):
@@ -197,30 +214,30 @@ def render_news(draw, items, cfg, font, line_h, item_gap):
     color = cfg["color"]
     num_color = cfg["num_color"]
     th = text_height(font)
-    number_match = re.compile(r"^(\d+\.\s*)(.*)$")
 
     cur_y = y
-    num_sample = "99. "
-    num_w = text_width(draw, num_sample, font)
+    # Use the widest "N. " (i.e. "99. ") as the left-indent for continuation
+    # lines so that "1. " and "14. " body lines all align with the same x.
+    num_w = text_width(draw, "99. ", font)
+    body_max_w = max_w - num_w - HORIZ_SAFETY_PX
 
     for item in items:
-        lines = wrap_text(item, max_w, font, draw)
-        # Pre-check: at least the first line of this item must fit
+        num_part, rest = _split_num(item)
+        # Wrap body using body_max_w so continuation lines (drawn from
+        # x + num_w) never exceed x + max_w. The first line gets a tighter
+        # indent (x + num_actual_w) since "1." is narrower than "99.".
+        body_lines = wrap_text(rest, body_max_w, font, draw)
         if cur_y + th > max_y:
             return
-        for i, line in enumerate(lines):
-            # Each line's text bottom must stay inside the region.
+        for i, line in enumerate(body_lines):
             if cur_y + th > max_y:
                 return
-            if i == 0:
-                m = number_match.match(line)
-                if m:
-                    num_part, rest = m.group(1), m.group(2)
-                    draw.text((x, cur_y), num_part, fill=num_color, font=font)
-                    rest_x = x + text_width(draw, num_part, font)
-                    draw.text((rest_x, cur_y), rest, fill=color, font=font)
-                else:
-                    draw.text((x, cur_y), line, fill=color, font=font)
+            if i == 0 and num_part:
+                num_actual_w = text_width(draw, num_part, font)
+                draw.text((x, cur_y), num_part, fill=num_color, font=font)
+                draw.text((x + num_actual_w, cur_y), line, fill=color, font=font)
+            elif i == 0:
+                draw.text((x, cur_y), line, fill=color, font=font)
             else:
                 draw.text((x + num_w, cur_y), line, fill=color, font=font)
             cur_y += line_h
@@ -232,10 +249,16 @@ def render_news(draw, items, cfg, font, line_h, item_gap):
 
 
 def actual_render_height(items, cfg, font, line_h, gap, draw):
-    """Exact render height: (n_lines-1)*line_h + text_h + (n_items-1)*gap + safety."""
+    """Exact render height: (n_lines-1)*line_h + text_h + (n_items-1)*gap + safety.
+
+    Body wrap uses (max_width - num_w - HORIZ_SAFETY) so continuation lines
+    (drawn from x + num_w) never exceed the right edge, even with bbox slop.
+    """
+    num_w = text_width(draw, "99. ", font)
+    body_max_w = cfg["max_width"] - num_w - HORIZ_SAFETY_PX
     n_lines = 0
     for it in items:
-        n_lines += len(wrap_text(it, cfg["max_width"], font, draw))
+        n_lines += len(wrap_body_for_fit(it, body_max_w, font, draw))
     if n_lines == 0:
         return 0
     th = text_height(font)
@@ -256,10 +279,14 @@ def fit_news(items, cfg, fonts_cfg):
 
     tmp = Image.new("RGBA", (1, 1))
     draw0 = ImageDraw.Draw(tmp)
+    num_w_0 = text_width(draw0, "99. ", find_font(fonts_cfg, fmax))
+    body_max_w = max_w - num_w_0 - HORIZ_SAFETY_PX
 
     def lines_per_item(fs):
         font = find_font(fonts_cfg, fs)
-        return [len(wrap_text(it, max_w, font, draw0)) for it in items], font
+        nw = text_width(draw0, "99. ", font)
+        bm = max_w - nw - HORIZ_SAFETY_PX
+        return [len(wrap_body_for_fit(it, bm, font, draw0)) for it in items], font
 
     # 1) pick the largest font whose actual render height (with base gap) fits.
     chosen_fs = fmin
