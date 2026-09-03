@@ -48,7 +48,8 @@
     "color": "#303030",
     "num_color": "#1a1a1a",
     "num_bold": true,
-    "align": "justify"
+    "align": "justify",
+    "indent": "left"
   },
   "fonts": {
     "path": "",
