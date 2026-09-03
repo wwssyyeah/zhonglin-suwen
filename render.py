@@ -117,12 +117,51 @@ def _split_num(text):
     return None, text
 
 
-def wrap_body_for_fit(text, body_max_width, font, draw):
-    """Wrap the body of an item (after stripping the 'N. ' prefix) for height
-    calculation. Reserves (max_width - body_max_width) pixels for the number
-    column on continuation lines."""
-    _, body = _split_num(text)
-    return wrap_text(body, body_max_width, font, draw)
+def continuation_indent(cfg, font, draw):
+    """Left offset (px from region x) used for continuation lines.
+
+    cfg["indent"]:
+      "left" -> 0, every body line starts flush at the region's left edge.
+      "hang" -> width of "99. ", i.e. hanging indent under the number column.
+    """
+    if cfg.get("indent", "left") == "hang":
+        return text_width(draw, "99. ", font)
+    return 0
+
+
+def wrap_item(text, first_w, cont_w, font, draw):
+    """Split one news item into (num_part, [body lines]).
+
+    The first line is wrapped to `first_w` (it sits right after the "N. "
+    prefix), every continuation line to `cont_w`. Both callers (fit and
+    render) must use this so the measured height matches what is painted.
+    """
+    num_part, body = _split_num(text)
+    lines = []
+    cur = ""
+    limit = first_w
+    for ch in body:
+        test = cur + ch
+        if text_width(draw, test, font) <= limit:
+            cur = test
+        else:
+            lines.append(cur)
+            cur = ch
+            limit = cont_w
+    if cur:
+        lines.append(cur)
+    return (num_part or ""), (lines if lines else [""])
+
+
+def item_line_widths(item, cfg, font, draw):
+    """Return (num_part, num_actual_w, cont_off, first_w, cont_w) for an item."""
+    num_part, _ = _split_num(item)
+    num_actual_w = text_width(draw, num_part, font) if num_part else 0
+    cont_off = continuation_indent(cfg, font, draw)
+    max_w = cfg["max_width"]
+    first_w = max_w - num_actual_w - HORIZ_SAFETY_PX
+    cont_w = max_w - cont_off - HORIZ_SAFETY_PX
+    return num_part or "", num_actual_w, cont_off, first_w, cont_w
 
 
 def fetch_weather(loc):
@@ -216,30 +255,24 @@ def render_news(draw, items, cfg, font, line_h, item_gap):
     th = text_height(font)
 
     cur_y = y
-    # Use the widest "N. " (i.e. "99. ") as the left-indent for continuation
-    # lines so that "1. " and "14. " body lines all align with the same x.
-    num_w = text_width(draw, "99. ", font)
-    body_max_w = max_w - num_w - HORIZ_SAFETY_PX
 
     for item in items:
-        num_part, rest = _split_num(item)
-        # Wrap body using body_max_w so continuation lines (drawn from
-        # x + num_w) never exceed x + max_w. The first line gets a tighter
-        # indent (x + num_actual_w) since "1." is narrower than "99.".
-        body_lines = wrap_text(rest, body_max_w, font, draw)
+        num_part, num_actual_w, cont_off, first_w, cont_w = item_line_widths(
+            item, cfg, font, draw)
+        _, body_lines = wrap_item(item, first_w, cont_w, font, draw)
         if cur_y + th > max_y:
             return
         for i, line in enumerate(body_lines):
             if cur_y + th > max_y:
                 return
-            if i == 0 and num_part:
-                num_actual_w = text_width(draw, num_part, font)
-                draw.text((x, cur_y), num_part, fill=num_color, font=font)
-                draw.text((x + num_actual_w, cur_y), line, fill=color, font=font)
-            elif i == 0:
-                draw.text((x, cur_y), line, fill=color, font=font)
+            if i == 0:
+                if num_part:
+                    draw.text((x, cur_y), num_part, fill=num_color, font=font)
+                    draw.text((x + num_actual_w, cur_y), line, fill=color, font=font)
+                else:
+                    draw.text((x, cur_y), line, fill=color, font=font)
             else:
-                draw.text((x + num_w, cur_y), line, fill=color, font=font)
+                draw.text((x + cont_off, cur_y), line, fill=color, font=font)
             cur_y += line_h
         # Gap check: only add the inter-item gap if the next item's first
         # line (line_h worth + text_h) would still fit.
@@ -251,14 +284,14 @@ def render_news(draw, items, cfg, font, line_h, item_gap):
 def actual_render_height(items, cfg, font, line_h, gap, draw):
     """Exact render height: (n_lines-1)*line_h + text_h + (n_items-1)*gap + safety.
 
-    Body wrap uses (max_width - num_w - HORIZ_SAFETY) so continuation lines
-    (drawn from x + num_w) never exceed the right edge, even with bbox slop.
+    Wraps each item exactly the way render_news() does (first line vs
+    continuation line have different available widths), so the measured
+    height always matches what gets painted.
     """
-    num_w = text_width(draw, "99. ", font)
-    body_max_w = cfg["max_width"] - num_w - HORIZ_SAFETY_PX
     n_lines = 0
     for it in items:
-        n_lines += len(wrap_body_for_fit(it, body_max_w, font, draw))
+        _, _, _, first_w, cont_w = item_line_widths(it, cfg, font, draw)
+        n_lines += len(wrap_item(it, first_w, cont_w, font, draw)[1])
     if n_lines == 0:
         return 0
     th = text_height(font)
@@ -279,14 +312,14 @@ def fit_news(items, cfg, fonts_cfg):
 
     tmp = Image.new("RGBA", (1, 1))
     draw0 = ImageDraw.Draw(tmp)
-    num_w_0 = text_width(draw0, "99. ", find_font(fonts_cfg, fmax))
-    body_max_w = max_w - num_w_0 - HORIZ_SAFETY_PX
 
     def lines_per_item(fs):
         font = find_font(fonts_cfg, fs)
-        nw = text_width(draw0, "99. ", font)
-        bm = max_w - nw - HORIZ_SAFETY_PX
-        return [len(wrap_body_for_fit(it, bm, font, draw0)) for it in items], font
+        counts = []
+        for it in items:
+            _, _, _, fw, cw = item_line_widths(it, cfg, font, draw0)
+            counts.append(len(wrap_item(it, fw, cw, font, draw0)[1]))
+        return counts, font
 
     # 1) pick the largest font whose actual render height (with base gap) fits.
     chosen_fs = fmin
