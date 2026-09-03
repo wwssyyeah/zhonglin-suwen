@@ -3,3 +3,9 @@ __pycache__/
 output.png
 news.json
 .DS_Store
+debug_*.py
+news_test.json
+check_*.png
+check_*.jpg
+chk_*.png
+preview_*.png
