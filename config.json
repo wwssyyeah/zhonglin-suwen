@@ -8,7 +8,8 @@
     "max_width": 244,
     "font_size": 34,
     "color": "#ffffff",
-    "align": "left"
+    "align": "left",
+    "bold": true
   },
   "weather": {
     "enabled": true,
@@ -28,7 +29,8 @@
       "max_width": 129,
       "font_size": 26,
       "color": "#004AAD",
-      "align": "left"
+      "align": "left",
+      "bold": true
     }
   },
   "news": {
