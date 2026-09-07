@@ -5,7 +5,7 @@ Grab the day's news from authoritative, free sources and write news.json.
 
 Sources (all free, no paid plan needed):
   1. 中国政府网·国务院政策文件库  —— 官方接口，自带发文单位与发文字号
-  2. 中新网 7 个频道 RSS + 人民日报 + 央视新闻  —— 实测 24 小时内条目、带正文
+  2. 中新网 5 个频道 RSS（要闻/国内/财经/国际/社会）+ 人民日报 + 央视新闻  —— 实测 24 小时内条目、带正文
   3. GDELT（免费、无需 Key）—— 作为人民网/新华网等站的发现层；
      这两家自有 RSS 已停更，但网站每日更新，故经 GDELT 索引后再拉正文。
      取不到正文的条目直接丢弃，只保留能支撑客观概括的素材。
@@ -35,7 +35,20 @@ SOFT_NEWS_KEYWORDS = [
     "赏花", "采摘", "夜市", "奇闻", "趣事", "搞笑", "短视频", "赶海",
 ]
 
+# 苏州本地判定：社会民生类新闻仅保留涉及苏州（含下辖区市）的条目
+SUZHOU_KEYWORDS = [
+    "苏州", "姑苏", "吴中", "吴江", "相城", "工业园区", "虎丘",
+    "昆山", "常熟", "太仓", "张家港",
+]
+
+def is_suzhou_local(item):
+    """社会民生类条目仅保留与苏州本地相关的：标题或正文含苏州属地关键词。"""
+    text = (item.get("title", "") or "") + " " + (item.get("body") or "")
+    return any(kw in text for kw in SUZHOU_KEYWORDS)
+
+
 # 频道优先级：数值越小越靠前。专业源全在第一档。
+# （健康、滚动综合两类已按需求剔除，不再抓取。）
 SOURCE_PRIORITY = {
     "中国政府网·国务院政策文件库": 0,
     "中新网·要闻": 1,
@@ -45,8 +58,6 @@ SOURCE_PRIORITY = {
     "人民日报": 1,
     "央视新闻": 1,
     "中新网·社会": 3,
-    "中新网·滚动": 4,
-    "中新网·健康": 5,
 }
 DEFAULT_PRIORITY = 4
 
@@ -76,8 +87,6 @@ RSS_SOURCES = [
     {"name": "中新网·财经", "url": "http://www.chinanews.com/rss/finance.xml"},
     {"name": "中新网·国际", "url": "http://www.chinanews.com/rss/world.xml"},
     {"name": "中新网·社会", "url": "http://www.chinanews.com/rss/society.xml"},
-    {"name": "中新网·滚动", "url": "http://www.chinanews.com/rss/scroll-news.xml"},
-    {"name": "中新网·健康", "url": "http://www.chinanews.com/rss/health.xml"},
     {"name": "人民日报", "url": "https://plink.anyfeeder.com/people-daily"},
     {"name": "央视新闻", "url": "https://plink.anyfeeder.com/weixin/cctvnewscenter"},
 ]
@@ -209,6 +218,9 @@ def fetch_rss_sources():
         items = parse_rss(r.content)
         for it in items:
             it["source_name"] = src["name"]
+        # 社会民生类：仅保留苏州本地新闻（尽量不抓全国性社会新闻）
+        if src["name"] == "中新网·社会":
+            items = [it for it in items if is_suzhou_local(it)]
         all_items.extend(items)
         print(f"RSS {src['name']}: {len(items)} items", file=sys.stderr)
     return all_items
@@ -484,7 +496,8 @@ def collect_items():
     policy = fetch_gov_policy()
 
     pool_items = fetch_rss_sources() + fetch_gdelt()
-    pool = select_items(dedup(pool_items), limit=max(MAX_SUMMARY_INPUT - len(policy), 6))
+    # 产出数量无硬性上限：让排版阶段按需缩小字号/取舍，只要不越界即可
+    pool = select_items(dedup(pool_items), limit=max(16 - len(policy), 8))
 
     return policy + pool
 
