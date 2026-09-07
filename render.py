@@ -301,67 +301,78 @@ def actual_render_height(items, cfg, font, line_h, gap, draw):
 
 
 def fit_news(items, cfg, fonts_cfg):
+    """为给定的新闻条目选择字号与行距，确保整体落在新闻区内不越界。
+
+    按用户要求：
+      1) 优先用尽量大的字号，使内容铺满白卡；
+      2) 若最小字号（font_size_min，用户要求 ≥12px）下仍放不下，
+         则从末尾删除条目（产出数量无硬性要求），直到放得下；
+      3) 内容偏少时，摊开段距与各自行距铺满，字号保持不变。
+    所有测量都与 render_news 完全一致（同一 wrap / 行宽逻辑），绝不会画越界。
+    """
     max_h = cfg["max_height"]
-    max_w = cfg["max_width"]
     base_ratio = cfg["line_height_ratio"]
     base_gap = cfg["item_gap"]
     fmax = cfg.get("font_size_max", cfg["font_size"])
-    fmin = cfg.get("font_size_min", 16)
+    fmin = max(12, cfg.get("font_size_min", 12))   # 用户要求：字体不小于 12px
     max_ratio = cfg.get("max_line_height_ratio", base_ratio)
     max_gap = cfg.get("max_item_gap", base_gap)
 
     tmp = Image.new("RGBA", (1, 1))
     draw0 = ImageDraw.Draw(tmp)
 
-    def lines_per_item(fs):
+    def render_height(its, fs, gap, line_h=None):
         font = find_font(fonts_cfg, fs)
-        counts = []
-        for it in items:
-            _, _, _, fw, cw = item_line_widths(it, cfg, font, draw0)
-            counts.append(len(wrap_item(it, fw, cw, font, draw0)[1]))
-        return counts, font
+        if line_h is None:
+            line_h = int(fs * base_ratio)
+        return actual_render_height(its, cfg, font, line_h, gap, draw0)
 
-    # 1) pick the largest font whose actual render height (with base gap) fits.
+    # 1) 最小字号下若仍越界 -> 从末尾删条（政策 4 条在最前，保留不被删）
+    working = list(items)
+    while working and render_height(working, fmin, base_gap) > max_h:
+        dropped = working.pop()
+        print(f"  dropped (overflow): {dropped[:30]}", file=sys.stderr)
+    if not working:                      # 极端兜底：至少保留首条
+        working = items[:1]
+
+    # 2) 在「都能放下」前提下选最大字号
     chosen_fs = fmin
     chosen_font = find_font(fonts_cfg, fmin)
     for fs in range(fmax, fmin - 1, -1):
-        lpe, f = lines_per_item(fs)
-        line_h = int(fs * base_ratio)
-        h = actual_render_height(items, cfg, f, line_h, base_gap, draw0)
-        if h <= max_h:
+        if render_height(working, fs, base_gap) <= max_h:
             chosen_fs = fs
-            chosen_font = f
+            chosen_font = find_font(fonts_cfg, fs)
             break
 
     line_h = int(chosen_fs * base_ratio)
-    cur_h = actual_render_height(items, cfg, chosen_font, line_h, base_gap, draw0)
+    cur_h = render_height(working, chosen_fs, base_gap)
     leftover = max_h - cur_h
 
-    # 2) under-fill: spread gap first, then line height, then re-validate.
-    if leftover > 2 * SAFETY_PX and len(items) > 1:
-        n_gaps = max(1, len(items) - 1)
+    # 3) 内容偏少 -> 先摊开段距，再摊开各行行距铺满（字号不变）
+    if leftover > 2 * SAFETY_PX and len(working) > 1:
+        n_gaps = max(1, len(working) - 1)
         extra_gap = int(min(leftover / n_gaps, max_gap - base_gap))
         if extra_gap > 0:
             gap = base_gap + extra_gap
-            # re-measure with new gap, then add the rest to line_h
-            h2 = actual_render_height(items, cfg, chosen_font, line_h, gap, draw0)
+            h2 = render_height(working, chosen_fs, gap)
             leftover2 = max_h - h2
             if leftover2 > 0:
-                lpe, _ = lines_per_item(chosen_fs)
-                n_lines = sum(lpe)
+                counts = []
+                for it in working:
+                    _, _, _, fw, cw = item_line_widths(it, cfg, chosen_font, draw0)
+                    counts.append(len(wrap_item(it, fw, cw, chosen_font, draw0)[1]))
+                n_lines = sum(counts)
                 if n_lines > 1:
-                    # Distribute leftover2 across (n_lines-1) line spacings.
                     inc_ratio = leftover2 / (chosen_fs * (n_lines - 1))
                     ratio = min(base_ratio + inc_ratio, max_ratio)
                     line_h = int(chosen_fs * ratio)
-            # final safety: pull line_h back if still over
-            h3 = actual_render_height(items, cfg, chosen_font, line_h, gap, draw0)
-            while h3 > max_h and line_h > int(chosen_fs * base_ratio):
+            # 最终保险：若仍越界，回退 line_h
+            while (render_height(working, chosen_fs, line_h, gap) > max_h
+                   and line_h > int(chosen_fs * base_ratio)):
                 line_h -= 1
-                h3 = actual_render_height(items, cfg, chosen_font, line_h, gap, draw0)
-            return chosen_font, items, line_h, gap
+            return chosen_font, working, line_h, gap
 
-    return chosen_font, items, line_h, base_gap
+    return chosen_font, working, line_h, base_gap
 
 
 def build_display_date(news):
