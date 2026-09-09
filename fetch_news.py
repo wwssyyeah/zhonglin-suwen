@@ -403,10 +403,12 @@ def select_items(items, limit=MAX_SUMMARY_INPUT):
 def summarize_one(item, key, model):
     """Summarize a single news item; returns summary string or raises."""
     system_msg = (
-        "你是一位严谨的新闻编辑。请根据下面新闻的【标题】和【正文】，"
-        "写一段 25 到 50 个字的客观概括（通常 1 到 2 句话）。"
-        "只使用材料中出现的事实（日期、地点、机构、人名、数字、政策名称），"
-        "不编造、不推测、不评论、不添加材料之外的任何信息。\n"
+        "你是一位严谨的新闻编辑。请根据下面新闻的【标题】和【正文】，写一段客观概括。\n"
+        "要求：\n"
+        "1) 说完整——以完整句子结尾，不要在半句话处截断；\n"
+        "2) 关键信息齐全（时间、地点、机构、人名、数字、政策名称等材料中出现的事实要素）；\n"
+        "3) 通常 1 到 3 句话，用最少的字把事说清即可，建议不超过 80 字；\n"
+        "4) 只使用材料中出现的事实，不编造、不推测、不评论、不添加材料之外的任何信息。\n"
         "直接输出概括文本，不要编号前缀，不要 JSON，不要解释。"
     )
     user_msg = (
@@ -496,8 +498,9 @@ def collect_items():
     policy = fetch_gov_policy()
 
     pool_items = fetch_rss_sources() + fetch_gdelt()
-    # 产出数量无硬性上限：让排版阶段按需缩小字号/取舍，只要不越界即可
-    pool = select_items(dedup(pool_items), limit=max(16 - len(policy), 8))
+    # 候选池适度收紧：概括改为「句尾完整、1-3 句」后单条变长，
+    # 控制总量使排版阶段不必大量删条即可完整显示（仍无硬性条数上限）。
+    pool = select_items(dedup(pool_items), limit=max(12 - len(policy), 6))
 
     return policy + pool
 
