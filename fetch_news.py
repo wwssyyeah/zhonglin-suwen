@@ -378,8 +378,9 @@ def select_items(items, limit=MAX_SUMMARY_INPUT):
         if len(it["body"]) < MAX_BODY_LEN:
             enrich_body(it)
 
-    usable = [it for it in candidates
-              if len(it["body"]) >= MIN_BODY_LEN or priority_of(it) <= 1]
+    # 必须带足够正文才送概括。正文不足的条目无法支撑客观概括，
+    # 会被模型拒答（如返回"无法完成概括"占位文），故一律剔除，不送概括。
+    usable = [it for it in candidates if len(it["body"]) >= MIN_BODY_LEN]
 
     buckets = {}
     for it in usable:
@@ -398,6 +399,29 @@ def select_items(items, limit=MAX_SUMMARY_INPUT):
         print(f"  body[{len(it['body']):4d}] prio={priority_of(it)} "
               f"{it.get('source_name','')[:14]} | {it['title'][:30]}", file=sys.stderr)
     return out
+
+
+# 模型在正文不足/被内容过滤时可能返回"拒答式"文字而非新闻概括。
+# 这些文字一旦进入新闻卡就成了"无法完成概括"之类的占位文，必须识别并丢弃。
+REFUSAL_MARKERS = [
+    "无法完成概括", "无法概括", "无法生成概括", "无法对该新闻", "无法对这条",
+    "缺少正文", "正文缺失", "正文不足", "正文内容不足", "正文内容缺失",
+    "无法根据", "无法基于", "材料不足", "信息不足", "内容不足",
+]
+
+
+def is_refusal_summary(text):
+    """判断模型返回的是否为「拒答/占位文」而非真实新闻概括。"""
+    if not text or len(text.strip()) < 2:
+        return True
+    t = text.strip()
+    for m in REFUSAL_MARKERS:
+        if m in t:
+            return True
+    # 以"抱歉/对不起"开头多为拒答
+    if t.startswith(("抱歉", "对不起")):
+        return True
+    return False
 
 
 def summarize_one(item, key, model):
@@ -451,11 +475,13 @@ def _is_rate_limit(exc):
 def summarize_with_zhipu(items):
     """Summarize each item individually.
 
-    - 200 with a summary -> use it.
+    - 200 with a real summary -> use it.
     - 429 (rate limit) -> back off and retry the next model.
-    - 400 content-filter / timeout / other -> give up on this item and fall
-      back to its title (sensitive items make the API hang, so we must not
-      retry them across models or the whole run stalls).
+    - 400 content-filter / timeout / other -> give up on this item.
+    - 模型返回「拒答/占位文」（如"无法完成概括，因为缺少正文内容"）
+      -> 视为无法概括，该条返回 None，由调用方在 main() 中丢弃，
+      不进入新闻卡显示。
+    返回列表与 items 等长，无法概括的位置为 None；全部失败/无 key 时返回 None。
     """
     key = os.environ.get("ZHIPU_API_KEY", "")
     if not key or not items:
@@ -483,13 +509,19 @@ def summarize_with_zhipu(items):
                 # blocked by content filter / network timeout -> fall back to title
                 print(f"{model} item {i + 1} skipped ({type(e).__name__})", file=sys.stderr)
                 break
-        results.append(summary or it["title"])
+        # 模型拒答/正文不足（如返回"无法完成概括"占位文）-> 该条丢弃，不在卡片显示
+        if summary and not is_refusal_summary(summary):
+            results.append(summary)
+        else:
+            results.append(None)
         if i < len(items) - 1:
             time.sleep(0.5)
 
     if results:
-        n_ok = sum(1 for s, it in zip(results, items) if s != it["title"])
-        print(f"summarized {n_ok}/{len(items)} items with Zhipu", file=sys.stderr)
+        n_ok = sum(1 for s in results if s)
+        n_drop = sum(1 for s in results if s is None)
+        print(f"summarized {n_ok}/{len(results)} items with Zhipu"
+              f"（{n_drop} 条因无法概括被丢弃）", file=sys.stderr)
     return results if results else None
 
 
@@ -519,8 +551,15 @@ def main():
     # AI 概括失败（额度耗尽/限流）时，降级为原始标题，绝不写入无来源内容
     summaries = summarize_with_zhipu(picked) or [it["title"] for it in picked]
 
+    # 丢弃「无法概括」的条目（模型拒答/正文不足），其余条目继续用
+    # render 调字号/行距的方式铺满新闻文字区，不显示占位文。
+    paired = [(s, it) for s, it in zip(summaries, picked) if s]
+    if not paired:
+        # 极端情形：全部无法概括，退回原始标题兜底，避免空白卡片
+        paired = [(it["title"], it) for it in picked]
+
     # 3) Renumber
-    items = [f"{i + 1}. {t}" for i, t in enumerate(summaries)]
+    items = [f"{i + 1}. {t}" for i, (t, _it) in enumerate(paired)]
 
     now = now_sh()
     weekday_cn = ['一', '二', '三', '四', '五', '六', '日'][now.weekday()]
